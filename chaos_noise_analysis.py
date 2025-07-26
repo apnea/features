@@ -21,6 +21,7 @@ from typing import Tuple, List, Optional
 import warnings
 import pyarrow.flight as flight
 import pyarrow as pa
+import math
 warnings.filterwarnings('ignore')
 
 class BandtPompeAnalysis:
@@ -37,7 +38,7 @@ class BandtPompeAnalysis:
             embedding_dimension: Embedding dimension D (typically 3-7)
         """
         self.D = embedding_dimension
-        self.factorial_D = np.math.factorial(self.D)
+        self.factorial_D = math.factorial(self.D)
         
     def ordinal_patterns(self, time_series: np.ndarray) -> np.ndarray:
         """
