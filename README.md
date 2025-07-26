@@ -1,8 +1,8 @@
 # Features
 
-## Chaos vs Noise Analysis for USD/EUR Exchange Rates
+## Chaos vs Noise Analysis for EUR/USD Exchange Rates
 
-This module implements the methodology from Rosso et al. (2007) "Distinguishing Noise from Chaos" to analyze whether USD/EUR exchange rate time series exhibit chaotic or stochastic behavior using the complexity-entropy causality plane.
+This module implements the methodology from Rosso et al. (2007) "Distinguishing Noise from Chaos" to analyze whether EUR/USD exchange rate time series exhibit chaotic or stochastic behavior using the complexity-entropy causality plane. Data is ingested from an Apache Arrow Flight server.
 
 ### Architecture Overview
 
@@ -35,12 +35,21 @@ ExchangeRateAnalyzer (Main Interface)
 - **Analysis Modes**: Full series or sliding window
 
 **3. ExchangeRateAnalyzer**
-- **Purpose**: Main interface for USD/EUR exchange rate analysis
+- **Purpose**: Main interface for EUR/USD exchange rate analysis with Arrow Flight integration
+- **Data Sources**: 
+  - Arrow Flight server at `grpc://localhost:8815` (primary)
+  - Legacy file loading (CSV/Excel) for backward compatibility
+- **Data Types Supported**:
+  - `'mid_price'`: (Ask + Bid) / 2 - most common for analysis
+  - `'ask_price'`: EUR/USD ask prices
+  - `'bid_price'`: EUR/USD bid prices  
+  - `'spread'`: Ask - Bid (absolute spread)
+  - `'relative_spread'`: Spread / Mid-price (normalized spread)
 - **Data Preprocessing Options**:
   - `'raw'`: Exchange rates as-is
   - `'returns'`: Price returns (Δp/p)
-  - `'log_returns'`: Log returns (Δln(p)) - recommended for financial data
-  - `'differenced'`: Simple differences (Δp)
+  - `'log_returns'`: Log returns (Δln(p)) - recommended for prices
+  - `'differenced'`: Simple differences (Δp) - recommended for spreads
 - **Visualization**: CH plane plots, time evolution, statistical reports
 
 ### Theoretical Foundation
@@ -62,19 +71,37 @@ The method plots statistical complexity C_JS (y-axis) versus normalized Shannon 
 ```python
 from chaos_noise_analysis import ExchangeRateAnalyzer
 
-# Initialize analyzer
-analyzer = ExchangeRateAnalyzer(embedding_dimension=6)
+# Initialize analyzer with Flight server connection
+analyzer = ExchangeRateAnalyzer(embedding_dimension=6, 
+                               flight_server="grpc://localhost:8815")
 
-# Load USD/EUR data
-analyzer.load_data('usd_eur_rates.csv', date_column='Date', rate_column='Rate')
+# Load EUR/USD data from Arrow Flight server
+analyzer.load_data_from_flight("EURUSD")
 
-# Run analysis
-results = analyzer.run_analysis(preprocessing_method='log_returns')
+# Run analysis on mid-price log returns
+results = analyzer.run_analysis(data_type='mid_price', 
+                               preprocessing_method='log_returns')
+
+# Run analysis on spread dynamics
+spread_results = analyzer.run_analysis(data_type='spread', 
+                                      preprocessing_method='differenced')
 
 # Generate report and visualizations
 print(analyzer.generate_report())
 fig = analyzer.plot_ch_plane()
 fig.show()
+
+# Compare multiple analyses
+analysis_configs = [
+    {'data_type': 'mid_price', 'method': 'log_returns'},
+    {'data_type': 'spread', 'method': 'differenced'},
+    {'data_type': 'relative_spread', 'method': 'differenced'}
+]
+
+for config in analysis_configs:
+    results = analyzer.run_analysis(**config)
+    print(f"Analysis: {config}")
+    print(analyzer.generate_report())
 ```
 
 ### Key Insights from Methodology
@@ -88,6 +115,8 @@ fig.show()
 - Identify market regime changes (chaos ↔ noise transitions)
 - Detect structural breaks in exchange rate dynamics
 - Assess predictability windows in financial time series
+- Analyze bid-ask spread microstructure behavior
+- Compare price vs spread dynamics for market efficiency insights
 - Complement traditional econometric analysis
 
 ### Dependencies
@@ -97,6 +126,16 @@ fig.show()
 - `matplotlib`: Visualization
 - `scipy`: Statistical functions
 - `itertools`: Permutation generation
+- `pyarrow`: Arrow Flight client for data ingestion
+
+### Data Schema
+
+The Arrow Flight server should provide EUR/USD data with the following schema:
+- `UTC`: Timestamp with timezone
+- `AskPrice`: EUR/USD ask price (double)
+- `BidPrice`: EUR/USD bid price (double)
+- `AskVolume`: Ask volume (double)
+- `BidVolume`: Bid volume (double)
 
 ### References
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Distinguishing Noise from Chaos Analysis for USD/EUR Exchange Rates
+Distinguishing Noise from Chaos Analysis for EUR/USD Exchange Rates
 
 Based on the methodology from:
 "Distinguishing Noise from Chaos" by Rosso et al. (2007)
 Physical Review Letters 99, 154102
 
 This script implements the complexity-entropy causality plane analysis
-to determine whether USD/EUR exchange rate time series exhibit
+to determine whether EUR/USD exchange rate time series exhibit
 chaotic or stochastic behavior.
 """
 
@@ -19,6 +19,8 @@ from scipy import stats
 from itertools import permutations
 from typing import Tuple, List, Optional
 import warnings
+import pyarrow.flight as flight
+import pyarrow as pa
 warnings.filterwarnings('ignore')
 
 class BandtPompeAnalysis:
@@ -272,24 +274,69 @@ class ChaosNoiseClassifier:
 
 class ExchangeRateAnalyzer:
     """
-    Main analyzer for USD/EUR exchange rate data.
+    Main analyzer for EUR/USD exchange rate data from Arrow Flight server.
     """
     
-    def __init__(self, embedding_dimension: int = 6):
+    def __init__(self, embedding_dimension: int = 6, flight_server: str = "grpc://localhost:8815"):
         """
         Initialize the exchange rate analyzer.
         
         Args:
             embedding_dimension: Embedding dimension for analysis
+            flight_server: Arrow Flight server connection string
         """
         self.classifier = ChaosNoiseClassifier(embedding_dimension)
+        self.flight_server = flight_server
         self.data = None
         self.results = None
+        
+    def load_data_from_flight(self, table_name: str = "EURUSD") -> pd.DataFrame:
+        """
+        Load EUR/USD exchange rate data from Arrow Flight server.
+        
+        Args:
+            table_name: Name of the table to fetch from Flight server
+            
+        Returns:
+            Loaded DataFrame with EUR/USD data
+        """
+        try:
+            client = flight.connect(self.flight_server)
+            print(f"Connected to Flight server at {self.flight_server}")
+            
+            # List available tables
+            flights = list(client.list_flights())
+            available_tables = [f.descriptor.path[0].decode() for f in flights]
+            print(f"Available tables: {available_tables}")
+            
+            if table_name not in available_tables:
+                raise ValueError(f"Table '{table_name}' not found. Available: {available_tables}")
+            
+            # Fetch data
+            ticket = flight.Ticket(table_name.encode())
+            reader = client.do_get(ticket)
+            
+            print("Fetching data from Flight server...")
+            table = reader.read_all()
+            df = table.to_pandas(use_threads=True)
+            
+            print(f"Loaded {len(df):,} rows with {len(df.columns)} columns")
+            print(f"Date range: {df['UTC'].min()} to {df['UTC'].max()}")
+            print(f"Schema: {list(df.columns)}")
+            
+            # Store the data
+            self.data = df
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error loading data from Flight server: {e}")
+            raise
         
     def load_data(self, file_path: str, date_column: str = 'Date', 
                   rate_column: str = 'Rate') -> pd.DataFrame:
         """
-        Load exchange rate data from file.
+        Load exchange rate data from file (legacy method).
         
         Args:
             file_path: Path to data file (CSV, Excel, etc.)
@@ -299,9 +346,7 @@ class ExchangeRateAnalyzer:
         Returns:
             Loaded DataFrame
         """
-        # TODO: Implement data loading logic
-        # This is a skeleton - you'll need to customize based on your data format
-        
+        # Legacy file loading method
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
         elif file_path.endswith(('.xlsx', '.xls')):
@@ -320,28 +365,95 @@ class ExchangeRateAnalyzer:
         
         return df
     
-    def preprocess_data(self, method: str = 'returns') -> np.ndarray:
+    def compute_mid_price(self) -> np.ndarray:
+        """
+        Compute mid-price from bid and ask prices.
+        
+        Returns:
+            Array of mid-prices
+        """
+        if self.data is None:
+            raise ValueError("No data loaded. Call load_data_from_flight() first.")
+        
+        if 'AskPrice' not in self.data.columns or 'BidPrice' not in self.data.columns:
+            raise ValueError("Data must contain 'AskPrice' and 'BidPrice' columns")
+        
+        mid_price = (self.data['AskPrice'] + self.data['BidPrice']) / 2
+        return mid_price.values
+    
+    def compute_spread(self) -> np.ndarray:
+        """
+        Compute bid-ask spread.
+        
+        Returns:
+            Array of spreads (ask - bid)
+        """
+        if self.data is None:
+            raise ValueError("No data loaded. Call load_data_from_flight() first.")
+        
+        if 'AskPrice' not in self.data.columns or 'BidPrice' not in self.data.columns:
+            raise ValueError("Data must contain 'AskPrice' and 'BidPrice' columns")
+        
+        spread = self.data['AskPrice'] - self.data['BidPrice']
+        return spread.values
+    
+    def compute_relative_spread(self) -> np.ndarray:
+        """
+        Compute relative spread (spread / mid-price).
+        
+        Returns:
+            Array of relative spreads
+        """
+        spread = self.compute_spread()
+        mid_price = self.compute_mid_price()
+        
+        # Avoid division by zero
+        mask = mid_price != 0
+        relative_spread = np.zeros_like(spread)
+        relative_spread[mask] = spread[mask] / mid_price[mask]
+        
+        return relative_spread
+    
+    def preprocess_data(self, data_type: str = 'mid_price', method: str = 'log_returns') -> np.ndarray:
         """
         Preprocess exchange rate data for analysis.
         
         Args:
+            data_type: Type of data to analyze ('mid_price', 'ask_price', 'bid_price', 
+                      'spread', 'relative_spread')
             method: Preprocessing method ('returns', 'log_returns', 'raw', 'differenced')
             
         Returns:
             Preprocessed time series
         """
         if self.data is None:
-            raise ValueError("No data loaded. Call load_data() first.")
+            raise ValueError("No data loaded. Call load_data_from_flight() first.")
         
-        # Assuming the rate column is the second column
-        rates = self.data.iloc[:, 1].values
+        # Get the appropriate data series
+        if data_type == 'mid_price':
+            rates = self.compute_mid_price()
+        elif data_type == 'ask_price':
+            rates = self.data['AskPrice'].values
+        elif data_type == 'bid_price':
+            rates = self.data['BidPrice'].values
+        elif data_type == 'spread':
+            rates = self.compute_spread()
+        elif data_type == 'relative_spread':
+            rates = self.compute_relative_spread()
+        else:
+            raise ValueError(f"Unknown data_type: {data_type}")
         
+        # Apply preprocessing method
         if method == 'raw':
             processed = rates
         elif method == 'returns':
             processed = np.diff(rates) / rates[:-1]
         elif method == 'log_returns':
-            processed = np.diff(np.log(rates))
+            # For spreads, use simple differences instead of log returns
+            if 'spread' in data_type:
+                processed = np.diff(rates)
+            else:
+                processed = np.diff(np.log(rates))
         elif method == 'differenced':
             processed = np.diff(rates)
         else:
@@ -352,12 +464,14 @@ class ExchangeRateAnalyzer:
         
         return processed
     
-    def run_analysis(self, preprocessing_method: str = 'log_returns',
+    def run_analysis(self, data_type: str = 'mid_price', preprocessing_method: str = 'log_returns',
                     window_size: Optional[int] = None) -> dict:
         """
         Run the complete chaos vs noise analysis.
         
         Args:
+            data_type: Type of data to analyze ('mid_price', 'ask_price', 'bid_price', 
+                      'spread', 'relative_spread')
             preprocessing_method: How to preprocess the data
             window_size: Size for sliding window analysis (None for full series)
             
@@ -365,10 +479,11 @@ class ExchangeRateAnalyzer:
             Analysis results dictionary
         """
         # Preprocess data
-        processed_data = self.preprocess_data(preprocessing_method)
+        processed_data = self.preprocess_data(data_type, preprocessing_method)
         
         # Run analysis
         self.results = self.classifier.analyze_time_series(processed_data, window_size)
+        self.results['data_type'] = data_type
         self.results['preprocessing_method'] = preprocessing_method
         self.results['data_length'] = len(processed_data)
         
@@ -407,11 +522,11 @@ class ExchangeRateAnalyzer:
         # Plot our data
         if self.results['analysis_type'] == 'full_series':
             ax.scatter(self.results['entropy'], self.results['complexity'], 
-                      c='red', s=100, alpha=0.8, label='USD/EUR', zorder=5)
+                      c='red', s=100, alpha=0.8, label='EUR/USD', zorder=5)
         else:
             # Sliding window analysis
             ax.scatter(self.results['entropy'], self.results['complexity'], 
-                      c='red', alpha=0.6, s=20, label='USD/EUR windows')
+                      c='red', alpha=0.6, s=20, label='EUR/USD windows')
             # Highlight mean
             ax.scatter(self.results['mean_entropy'], self.results['mean_complexity'],
                       c='darkred', s=150, alpha=1.0, label='Mean', zorder=5,
@@ -429,7 +544,7 @@ class ExchangeRateAnalyzer:
         
         ax.set_xlabel('Normalized Shannon Entropy (H_S)')
         ax.set_ylabel('Statistical Complexity (C_JS)')
-        ax.set_title('Complexity-Entropy Causality Plane\nUSD/EUR Exchange Rate Analysis')
+        ax.set_title(f'Complexity-Entropy Causality Plane\nEUR/USD Exchange Rate Analysis\n({self.results.get("data_type", "N/A")} - {self.results.get("preprocessing_method", "N/A")})')
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0, 1)
@@ -489,10 +604,11 @@ class ExchangeRateAnalyzer:
         report = []
         report.append("=" * 60)
         report.append("CHAOS vs NOISE ANALYSIS REPORT")
-        report.append("USD/EUR Exchange Rate")
+        report.append("EUR/USD Exchange Rate")
         report.append("=" * 60)
         report.append("")
         
+        report.append(f"Data type: {self.results.get('data_type', 'N/A')}")
         report.append(f"Data preprocessing: {self.results['preprocessing_method']}")
         report.append(f"Data length: {self.results['data_length']} points")
         report.append(f"Embedding dimension: {self.classifier.embedding_dim}")
@@ -534,79 +650,150 @@ class ExchangeRateAnalyzer:
 
 def main():
     """
-    Example usage of the USD/EUR chaos vs noise analyzer.
+    Example usage of the EUR/USD chaos vs noise analyzer with Flight server.
     """
     # Initialize analyzer
     analyzer = ExchangeRateAnalyzer(embedding_dimension=6)
     
-    # TODO: Load your data
-    # analyzer.load_data('path/to/your/usd_eur_data.csv')
-    
-    # Example with synthetic data for testing
-    print("Creating synthetic USD/EUR data for demonstration...")
-    
-    # Generate synthetic exchange rate data
-    np.random.seed(42)
-    dates = pd.date_range('2020-01-01', '2023-12-31', freq='D')
-    
-    # Create a mixed signal: trend + noise + some chaotic component
-    trend = 1.1 + 0.1 * np.sin(2 * np.pi * np.arange(len(dates)) / 365)
-    noise = 0.02 * np.random.randn(len(dates))
-    
-    # Add a simple chaotic component (logistic map influence)
-    chaotic = np.zeros(len(dates))
-    x = 0.5
-    for i in range(len(dates)):
-        x = 3.9 * x * (1 - x)  # Chaotic logistic map
-        chaotic[i] = 0.01 * (x - 0.5)
-    
-    rates = trend + noise + chaotic
-    
-    # Create DataFrame
-    synthetic_data = pd.DataFrame({
-        'Date': dates,
-        'USD_EUR_Rate': rates
-    })
-    
-    analyzer.data = synthetic_data
-    
-    print("Running analysis...")
-    
-    # Run full series analysis
-    results_full = analyzer.run_analysis(preprocessing_method='log_returns')
-    
-    # Run sliding window analysis
-    results_window = analyzer.run_analysis(
-        preprocessing_method='log_returns',
-        window_size=100
-    )
-    
-    # Generate and print reports
-    print("\nFULL SERIES ANALYSIS:")
-    analyzer.results = results_full
-    print(analyzer.generate_report())
-    
-    print("\nSLIDING WINDOW ANALYSIS:")
-    analyzer.results = results_window
-    print(analyzer.generate_report())
-    
-    # Create visualizations
-    print("\nGenerating plots...")
-    
-    # Plot CH plane for full series
-    analyzer.results = results_full
-    fig1 = analyzer.plot_ch_plane()
-    fig1.suptitle('Full Series Analysis')
-    
-    # Plot CH plane for windowed analysis
-    analyzer.results = results_window
-    fig2 = analyzer.plot_ch_plane()
-    fig2.suptitle('Sliding Window Analysis')
-    
-    # Plot time evolution
-    fig3 = analyzer.plot_time_evolution()
-    
-    plt.show()
+    try:
+        # Load data from Flight server
+        print("Loading EUR/USD data from Arrow Flight server...")
+        analyzer.load_data_from_flight("EURUSD")
+        
+        # Subsample data for faster analysis (optional)
+        # Take every 1000th point to reduce computation time
+        print("Subsampling data for faster analysis...")
+        original_size = len(analyzer.data)
+        analyzer.data = analyzer.data.iloc[::1000].reset_index(drop=True)
+        print(f"Data reduced from {original_size:,} to {len(analyzer.data):,} points")
+        
+        # Define analysis configurations
+        analysis_configs = [
+            {'data_type': 'mid_price', 'method': 'log_returns', 'desc': 'Mid-price log returns'},
+            {'data_type': 'spread', 'method': 'differenced', 'desc': 'Spread changes'},
+            {'data_type': 'relative_spread', 'method': 'differenced', 'desc': 'Relative spread changes'},
+        ]
+        
+        results_summary = []
+        
+        for config in analysis_configs:
+            print(f"\n{'='*60}")
+            print(f"ANALYZING: {config['desc']}")
+            print(f"{'='*60}")
+            
+            # Run full series analysis
+            results = analyzer.run_analysis(
+                data_type=config['data_type'],
+                preprocessing_method=config['method']
+            )
+            
+            # Store results for comparison
+            results_summary.append({
+                'description': config['desc'],
+                'entropy': results['entropy'][0],
+                'complexity': results['complexity'][0],
+                'classification': results['classification'],
+                'data_type': config['data_type'],
+                'method': config['method']
+            })
+            
+            # Print report
+            print(analyzer.generate_report())
+            
+            # Create visualization
+            fig = analyzer.plot_ch_plane()
+            fig.suptitle(f'EUR/USD Analysis: {config["desc"]}')
+            plt.show()
+        
+        # Summary comparison
+        print(f"\n{'='*80}")
+        print("SUMMARY COMPARISON")
+        print(f"{'='*80}")
+        print(f"{'Analysis':<25} {'Entropy':<10} {'Complexity':<12} {'Classification'}")
+        print("-" * 80)
+        
+        for result in results_summary:
+            print(f"{result['description']:<25} {result['entropy']:<10.4f} "
+                  f"{result['complexity']:<12.4f} {result['classification']}")
+        
+        # Create comparison plot
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        colors = ['red', 'blue', 'green', 'orange', 'purple']
+        for i, result in enumerate(results_summary):
+            ax.scatter(result['entropy'], result['complexity'], 
+                      s=150, alpha=0.8, color=colors[i % len(colors)],
+                      label=result['description'])
+        
+        # Plot theoretical bounds
+        entropy_range = np.linspace(0, 1, 1000)
+        c_max = 0.5 * entropy_range * (1 - entropy_range)
+        c_min = np.zeros_like(entropy_range)
+        
+        ax.fill_between(entropy_range, c_min, c_max, alpha=0.1, color='gray')
+        ax.plot(entropy_range, c_max, 'k--', alpha=0.5, label='C_max')
+        
+        ax.set_xlabel('Normalized Shannon Entropy (H_S)')
+        ax.set_ylabel('Statistical Complexity (C_JS)')
+        ax.set_title('EUR/USD Exchange Rate: Comparison of Different Analyses')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 0.5)
+        
+        plt.tight_layout()
+        plt.show()
+        
+    except Exception as e:
+        print(f"Error in analysis: {e}")
+        print("\nFalling back to synthetic data demonstration...")
+        
+        # Fallback to synthetic data
+        print("Creating synthetic EUR/USD data for demonstration...")
+        
+        # Generate synthetic exchange rate data
+        np.random.seed(42)
+        dates = pd.date_range('2020-01-01', '2023-12-31', freq='H')
+        
+        # Create a mixed signal: trend + noise + some chaotic component
+        base_rate = 1.15 + 0.1 * np.sin(2 * np.pi * np.arange(len(dates)) / (365*24))
+        noise = 0.002 * np.random.randn(len(dates))
+        
+        # Add a simple chaotic component (logistic map influence)
+        chaotic = np.zeros(len(dates))
+        x = 0.5
+        for i in range(len(dates)):
+            x = 3.9 * x * (1 - x)  # Chaotic logistic map
+            chaotic[i] = 0.001 * (x - 0.5)
+        
+        mid_prices = base_rate + noise + chaotic
+        
+        # Generate bid-ask spread (typically tight for major pairs)
+        spreads = 0.0001 + 0.00005 * np.random.exponential(1, len(dates))
+        
+        ask_prices = mid_prices + spreads / 2
+        bid_prices = mid_prices - spreads / 2
+        
+        # Create DataFrame matching Flight server format
+        synthetic_data = pd.DataFrame({
+            'UTC': dates,
+            'AskPrice': ask_prices,
+            'BidPrice': bid_prices,
+            'AskVolume': np.random.exponential(2, len(dates)),
+            'BidVolume': np.random.exponential(2, len(dates))
+        })
+        
+        analyzer.data = synthetic_data
+        
+        print("Running analysis on synthetic data...")
+        
+        # Run analysis on mid-price
+        results = analyzer.run_analysis(data_type='mid_price', preprocessing_method='log_returns')
+        print(analyzer.generate_report())
+        
+        # Create visualization
+        fig = analyzer.plot_ch_plane()
+        plt.show()
 
 
 if __name__ == "__main__":
