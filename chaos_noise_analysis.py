@@ -30,7 +30,7 @@ class BandtPompeAnalysis:
     for distinguishing chaos from noise.
     """
     
-    def __init__(self, embedding_dimension: int = 6):
+    def __init__(self, embedding_dimension: int = 10):
         """
         Initialize the Bandt-Pompe analyzer.
         
@@ -661,12 +661,7 @@ def main():
         print("Loading EUR/USD data from Arrow Flight server...")
         analyzer.load_data_from_flight("EURUSD")
         
-        # Subsample data for faster analysis (optional)
-        # Take every 1000th point to reduce computation time
-        print("Subsampling data for faster analysis...")
         original_size = len(analyzer.data)
-        analyzer.data = analyzer.data.iloc[::1000].reset_index(drop=True)
-        print(f"Data reduced from {original_size:,} to {len(analyzer.data):,} points")
         
         # Define analysis configurations
         analysis_configs = [
@@ -704,7 +699,8 @@ def main():
             # Create visualization
             fig = analyzer.plot_ch_plane()
             fig.suptitle(f'EUR/USD Analysis: {config["desc"]}')
-            plt.show()
+            plt.savefig(f'{config["data_type"]}_{config["method"]}_ch_plane.png')
+            # plt.show()
         
         # Summary comparison
         print(f"\n{'='*80}")
@@ -743,58 +739,11 @@ def main():
         ax.set_ylim(0, 0.5)
         
         plt.tight_layout()
-        plt.show()
+        plt.savefig('embedding dimension 10.png')
+        # plt.show()
         
     except Exception as e:
         print(f"Error in analysis: {e}")
-        print("\nFalling back to synthetic data demonstration...")
-        
-        # Fallback to synthetic data
-        print("Creating synthetic EUR/USD data for demonstration...")
-        
-        # Generate synthetic exchange rate data
-        np.random.seed(42)
-        dates = pd.date_range('2020-01-01', '2023-12-31', freq='H')
-        
-        # Create a mixed signal: trend + noise + some chaotic component
-        base_rate = 1.15 + 0.1 * np.sin(2 * np.pi * np.arange(len(dates)) / (365*24))
-        noise = 0.002 * np.random.randn(len(dates))
-        
-        # Add a simple chaotic component (logistic map influence)
-        chaotic = np.zeros(len(dates))
-        x = 0.5
-        for i in range(len(dates)):
-            x = 3.9 * x * (1 - x)  # Chaotic logistic map
-            chaotic[i] = 0.001 * (x - 0.5)
-        
-        mid_prices = base_rate + noise + chaotic
-        
-        # Generate bid-ask spread (typically tight for major pairs)
-        spreads = 0.0001 + 0.00005 * np.random.exponential(1, len(dates))
-        
-        ask_prices = mid_prices + spreads / 2
-        bid_prices = mid_prices - spreads / 2
-        
-        # Create DataFrame matching Flight server format
-        synthetic_data = pd.DataFrame({
-            'UTC': dates,
-            'AskPrice': ask_prices,
-            'BidPrice': bid_prices,
-            'AskVolume': np.random.exponential(2, len(dates)),
-            'BidVolume': np.random.exponential(2, len(dates))
-        })
-        
-        analyzer.data = synthetic_data
-        
-        print("Running analysis on synthetic data...")
-        
-        # Run analysis on mid-price
-        results = analyzer.run_analysis(data_type='mid_price', preprocessing_method='log_returns')
-        print(analyzer.generate_report())
-        
-        # Create visualization
-        fig = analyzer.plot_ch_plane()
-        plt.show()
 
 
 if __name__ == "__main__":

@@ -137,6 +137,25 @@ The Arrow Flight server should provide EUR/USD data with the following schema:
 - `AskVolume`: Ask volume (double)
 - `BidVolume`: Bid volume (double)
 
+### Analysis Results
+
+The following complexity-entropy causality plane plots show the analysis results for different aspects of EUR/USD exchange rate data:
+
+#### Mid-Price Log Returns Analysis
+![Mid-Price Log Returns CH Plane](mid_price_log_returns_ch_plane.png)
+
+Analysis of EUR/USD mid-price log returns in the complexity-entropy causality plane. This represents the core exchange rate dynamics.
+
+#### Spread Dynamics Analysis
+![Spread Differenced CH Plane](spread_differenced_ch_plane.png)
+
+Analysis of bid-ask spread changes, revealing the microstructure behavior of the EUR/USD market.
+
+#### Relative Spread Analysis
+![Relative Spread Differenced CH Plane](relative_spread_differenced_ch_plane.png)
+
+Analysis of relative spread changes (normalized by mid-price), providing insights into market liquidity dynamics.
+
 ### References
 
 Rosso, O. A., Larrondo, H. A., Martin, M. T., Plastino, A., & Fuentes, M. A. (2007). *Distinguishing Noise from Chaos*. Physical Review Letters, 99(15), 154102.
